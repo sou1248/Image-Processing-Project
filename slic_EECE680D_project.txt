@@ -1,4 +1,7 @@
+# -*- coding: utf-8 -*-
+"""
 Created on Mon Apr 23 09:45:30 2018
+
 This is slic algorithm implementation with opencv/python.
  
 Input: I, K, M, iter_max, eps_
@@ -6,14 +9,11 @@ I: image file saved in directory
 K: desired number of superpixels
 M: Nc constant assuming Ns=S=sqrt(N/K) initial superpixel size where N number of pixel
 iter_max: maximum iteration
-eps_: convergence threshold
+eps_: lower error threshold
 
 Output: K superpixel of similar size as image file saved in directory, including plot
 
 @author: WIN7WOS
-
-Souleymane Sow
-
 """
 
 import math
@@ -58,9 +58,9 @@ class SLICProcessor(object):
         self.N = self.image_height * self.image_width # number of pixel
         self.S = int(math.sqrt(self.N / self.K)) # step size and constant Ns
 
-        self.clusters = [] 
+        self.clusters = [] # empty list object 
         self.label = {} # empty dictionary object with tuple keys and cluster values
-        self.dis = np.full((self.image_height, self.image_width), np.inf) 
+        self.dis = np.full((self.image_height, self.image_width), np.inf) #creating an array filled with infinity
         
     @staticmethod
     def open_image(path):
@@ -207,7 +207,7 @@ class SLICProcessor(object):
     def save_current_image(self, name):
         image_arr = np.copy(self.data)
         for cluster in self.clusters:
-            for p in cluster.pixels: # uodate all pixel in cluster with new data from update and reset cluster seed
+            for p in cluster.pixels: 
                 image_arr[p[0]][p[1]][0] = cluster.l
                 image_arr[p[0]][p[1]][1] = cluster.a
                 image_arr[p[0]][p[1]][2] = cluster.b
