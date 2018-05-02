@@ -1,0 +1,488 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Apr 23 09:42:41 2018
+
+This is manifold slic algorithm implementation with opencv/python.
+ 
+Input: I, K, M, iter_max, eps_
+I: image file saved in directory
+K: desired number of content sensitive superpixels
+M: Nc constant assuming Ns=S=sqrt(N/K) initial superpixel size where N number of pixel
+iter_max: maximum iteration
+eps_: lower error threshold
+
+Output: K content sensitive superpixels of similar size as image file saved in directory, including plot
+
+@author: WIN7WOS
+"""
+
+import math
+from skimage import io, color
+import numpy as np
+from tqdm import tqdm
+import cv2
+
+class Cluster(object):
+    
+    cluster_index = 1
+    
+    def __init__(self, h, w, l=0, a=0, b=0):
+        self.update(h, w, l, a, b)  # seed pixel and color value
+        self.pixels = [] # seed pixels (h,w) list for each cluster
+        self.no = self.cluster_index
+        Cluster.cluster_index += 1
+
+    def update(self, h, w, l, a, b):
+        self.h = h # cluster seed h
+        self.w = w # cluster seed w
+        self.l = l 
+        self.a = a
+        self.b = b
+
+    def __str__(self):
+        return "{},{}:{} {} {} ".format(self.h, self.w, self.l, self.a, self.b)
+
+    def __repr__(self):
+        return self.__str__()
+
+class SLICProcessor(object):
+    
+    def __init__(self, filename, K, M, iter_max, eps_, draw_contour=1, split_merge=0): # Contour and no split and merge by default
+        self.K = K # desired number of superpixel
+        self.M = M # constant Nc
+        self.iter_max = iter_max # max iterations
+        self.eps_ = eps_ # convergence threshold
+
+        self.data = self.open_image(filename)
+        self.image_height = self.data.shape[0]# raw axis
+        self.image_width = self.data.shape[1]
+        self.N = self.image_height * self.image_width # number of pixel
+        self.S = int(math.sqrt(self.N / self.K)) # step size and constant Ns
+        self._iter=0
+        self._init=0
+        self.split_merge=split_merge
+        self.draw_contour=draw_contour
+
+        self.clusters = [] # empty list of all clusters (object )
+        self.label = {} # empty dictionary object of pixels(all) as tuple keys for cluster seed values h,w,l,a,b
+        self.lmda={} # empty dictionary object with tuple keys and lamda values
+        self.visit={} # empty dictionary object with tuple keys and values true/false
+        self.unlist=[] # empty list cluster object
+        self.merge='' # empty string object with values true/false
+        self.E=0  # local search range values
+        self.p_area= {} # empty dictionary object with tuple keys and area values
+        self.dis = np.full((self.image_height, self.image_width), np.inf) # array of size image initialized infinity
+        
+    @staticmethod
+    def open_image(path):
+        """
+        Return:
+            3D array, row col [LAB]
+        """
+        rgb = io.imread(path)
+        lab_arr = color.rgb2lab(rgb)
+        return lab_arr
+    
+    def make_cluster(self, h, w):
+        h=int(h)
+        w=int(w)
+        return Cluster(h, w,
+                       self.data[h][w][0],
+                       self.data[h][w][1],
+                       self.data[h][w][2])
+
+    def init_clusters(self): # initialize seed at regular grid
+        h = self.S / 2
+        w = self.S / 2
+        while h < self.image_height:
+            while w < self.image_width:
+                self.clusters.append(self.make_cluster(h, w)) 
+                w += self.S
+            w = self.S / 2 
+            h += self.S
+            
+    def get_gradient(self, h, w):
+        if w + 1 >= self.image_width: # check for edge
+            w = self.image_width - 2
+        if h + 1 >= self.image_height:
+            h = self.image_height - 2
+
+        gradient = self.data[h + 1][w + 1][0] - self.data[h][w][0] + \
+                   self.data[h + 1][w + 1][1] - self.data[h][w][1] + \
+                   self.data[h + 1][w + 1][2] - self.data[h][w][2]
+        return gradient
+            
+    def move_clusters(self): # move each seed to the lowest gradient position in a 3x3 neighborhood
+        for cluster in self.clusters: 
+            cluster_gradient = self.get_gradient(cluster.h, cluster.w)
+            for dh in range(-1, 2): 
+                for dw in range(-1, 2): 
+                    _h = cluster.h + dh 
+                    _w = cluster.w + dw
+                    new_gradient = self.get_gradient(_h, _w)
+                    if new_gradient < cluster_gradient:
+                        cluster.update(_h, _w, self.data[_h][_w][0], self.data[_h][_w][1], self.data[_h][_w][2])
+                        cluster_gradient = new_gradient
+    
+    
+    def get_dis(self, h1, w1, h2, w2): 
+        h1=int(h1)
+        w1=int(w1)
+        h2=int(h2)
+        w2=int(w2)
+        L1, A1, B1 = self.data[h1][w1] 
+        L2, A2, B2 = self.data[h2][w2] 
+        Dc = math.sqrt(
+                        math.pow(L1 - L2, 2) +
+                        math.pow(A1 - A2, 2) +
+                        math.pow(B1 - B2, 2))
+        Ds = math.sqrt(
+                        math.pow(h1 - h2, 2) +
+                        math.pow(w1 - w2, 2))
+        D = math.sqrt(math.pow(Dc / self.M, 2) + math.pow(Ds / self.S, 2)) 
+        return D
+    
+    def get_area(self, h, w):
+        w1=w-0.5
+        h1=h+0.5
+        w2=w-0.5
+        h2=h-0.5
+        w3=w+0.5
+        h3=h-0.5
+        w4=w+0.5
+        h4=h+0.5
+        P21=self.get_dis(h1, w1, h2, w2)
+        P23=self.get_dis(h3, w3, h2, w2)
+        P13=self.get_dis(h3, w3, h1, w1)
+        cos2=(math.pow(P21,2)+math.pow(P23,2)-math.pow(P13,2))/(2*P21*P23+np.finfo(float).eps)
+        sin2=math.sqrt(1-math.pow(cos2,2))
+        P41=self.get_dis(h1, w1, h4, w4 )
+        P43=self.get_dis(h3, w3, h4, w4 )
+        cos4=(math.pow(P41,2)+math.pow(P43,2)-math.pow(P13,2))/(2*P41*P43+np.finfo(float).eps)
+        sin4=math.sqrt(1-math.pow(cos4,2))
+        area=(P21*P23*sin2+P41*P43*sin4)
+        return area
+        
+    def compute_area(self):
+        for h in range(0,self.image_height): # within 2Sx2S region around si
+                if h < 0 or h >= self.image_height: continue
+                for w in range(0,self.image_width):
+                    if w < 0 or w >= self.image_width: continue
+                    self.p_area[(h, w)] = self.get_area(h, w) 
+    
+    def compute_E(self): 
+        
+        sum_area=0
+        for x,y in self.p_area:
+            sum_area+=self.p_area[(x,y)]
+        self.E=4*sum_area/self.K
+    
+    def assignment(self):
+        for cluster in self.clusters:
+            if self._init==1:
+                self.lmda[(cluster.h,cluster.w)]=1
+            for h in range(int(cluster.h - 2*self.S*self.lmda[(cluster.h,cluster.w)]), 
+                           int(cluster.h + 2*self.S*self.lmda[(cluster.h,cluster.w)])): 
+                if h < 0 or h >= self.image_height: continue
+                for w in range(int(cluster.w - 2 * self.S*self.lmda[(cluster.h,cluster.w)]), 
+                               int(cluster.w + 2 * self.S*self.lmda[(cluster.h,cluster.w)])):
+                    if w < 0 or w >= self.image_width: continue
+                    L, A, B = self.data[h][w] 
+                    Dc = math.sqrt(
+                        math.pow(L - cluster.l, 2) +
+                        math.pow(A - cluster.a, 2) +
+                        math.pow(B - cluster.b, 2))
+                    Ds = math.sqrt(
+                        math.pow(h - cluster.h, 2) +
+                        math.pow(w - cluster.w, 2))
+                    D = math.sqrt(math.pow(Dc / self.M, 2) +
+                                  math.pow(Ds / (self.S), 2)) 
+                    if D < self.dis[h][w]: 
+                        if (h, w) not in self.label: 
+                            self.label[(h, w)] = cluster 
+                            cluster.pixels.append((h, w)) 
+                        else: 
+                            self.label[(h, w)].pixels.remove((h, w)) 
+                            self.label[(h, w)] = cluster 
+                            cluster.pixels.append((h, w)) 
+                        self.dis[h][w] = D 
+                          
+    def split(self):
+        for cluster in self.clusters:
+            omeg_area=0
+            for h in range(cluster.h - 2*self.S, cluster.h + 2*self.S): # within 2Sx2S region around si
+                if h < 0 or h >= self.image_height: continue
+                for w in range(cluster.w - 2 * self.S, cluster.w + 2 * self.S):
+                    if w < 0 or w >= self.image_width: continue
+                    omeg_area+=self.p_area[(h,w)]
+            self.lmda[(cluster.h,cluster.w)]=math.sqrt(self.E/omeg_area)
+            cell_area=0
+            for h in range(cluster.h - self.S, cluster.h + self.S): # within 2Sx2S region around si
+                if h < 0 or h >= self.image_height: continue
+                for w in range(cluster.w - 2 * self.S, cluster.w + 2 * self.S):
+                    if w < 0 or w >= self.image_width: continue
+                    cell_area+=self.p_area[(h,w)]
+            tau=math.sqrt(self.E*self.K/self.N)
+
+            if  self._iter>0 and self.lmda[(cluster.h,cluster.w)]<tau and cell_area>self.E/4:
+                 h1=int(cluster.h+self.S*self.lmda[(cluster.h,cluster.w)]/2)
+                 w1=int(cluster.w-self.S*self.lmda[(cluster.h,cluster.w)]/2) 
+                 self.clusters.append(self.make_cluster(h1,w1))
+                 self.lmda[(h1,w1)]=self.lmda[(cluster.h,cluster.w)]/2
+                 
+                 h2=int(cluster.h-self.S*self.lmda[(cluster.h,cluster.w)]/2)
+                 w2=int(cluster.w-self.S*self.lmda[(cluster.h,cluster.w)]/2)
+                 self.clusters.append(self.make_cluster(h2,w2))
+                 self.lmda[(h2,w2)]=self.lmda[(cluster.h,cluster.w)]/2
+                 
+                 h3=int(cluster.h-self.S*self.lmda[(cluster.h,cluster.w)]/2)
+                 w3=int(cluster.w+self.S*self.lmda[(cluster.h,cluster.w)]/2)
+                 self.clusters.append(self.make_cluster(h3,w3))
+                 self.lmda[(h3,w3)]=self.lmda[(cluster.h,cluster.w)]/2
+                 
+                 h4=int(cluster.h+self.S*self.lmda[(cluster.h,cluster.w)]/2)
+                 w4=int(cluster.w+self.S*self.lmda[(cluster.h,cluster.w)]/2)
+                 self.clusters.append(self.make_cluster(h4,w4))
+                 self.lmda[(h4,w4)]=self.lmda[(cluster.h,cluster.w)]/2
+                 
+                 del self.lmda[(cluster.h,cluster.w)]
+                 self.clusters.remove(cluster)
+                 
+    def merge_cluster(self):
+        dx4 = [-1, 0, 1, 0]
+        dy4 = [0, -1, 0, 1]
+        
+        for h in range(self.image_height):
+            if h < 0 or h >= self.image_height: continue
+            for w in range(self.image_width):
+                if w < 0 or w >= self.image_width: continue
+                self.visit[(h,w)]=False
+        
+        for h in range(self.image_height):
+            for w in range(self.image_width):
+                if self.visit[(h,w)]==False:
+                    l=self.label[(h,w)]
+                    for hw in self.label[(h,w)].pixels:
+                        for dx, dy in zip(dx4, dy4):
+                            x = hw[0] + dx
+                            y = hw[1] + dy
+                            if (x>=0 and x < self.image_height and 
+                                y>=0 and y < self.image_width and 
+                                self.visit[(x,y)]==False and self.label[(x,y)]==l):
+                                self.visit[(x,y)]=True
+                            if (x>=0 and x < self.image_height and 
+                                y>=0 and y < self.image_width and 
+                                self.visit[(x,y)]==False and self.label[(x,y)]!=l): 
+                                self.unlist.append(self.label[(x,y)]) 
+                                self.merge=False
+                    Al=0
+                    for x,y in self.label[(h,w)].pixels:
+                        Al+=self.p_area[(x,y)]
+                    At=0
+                    for x,y in self.p_area:
+                        At+=self.p_area[(x,y)]
+                    
+                    if self.unlist!=[] and Al<At/(8*self.K):
+                        k=self.unlist.pop()
+                        
+                        for hw in k.pixels:
+                            for dx, dy in zip(dx4, dy4):
+                                x = hw[0] + dx
+                                y = hw[1] + dy
+                                if (x>=0 and x < self.image_height and 
+                                    y>=0 and y < self.image_width and 
+                                    self.visit[(x,y)]==False and self.label[(x,y)]==k):
+                                    self.visit[(x,y)]=True
+                                    self.label[(x, y)].pixels.remove((x, y)) 
+                                    self.label[(x,y)]=l 
+                                    self.label[(x, y)].pixels.append((x, y))
+                        Ak=self.p_area[(k.h,k.w)]
+                        lamd1=1/self.S
+                        lamd2=1/self.M
+                        ph_l=[l.h,l.w,l.l*lamd2/lamd1,l.a*lamd2/lamd1,l.a*lamd2/lamd1]
+                        ph_k=[k.h,k.w,k.l*lamd2/lamd1,k.a*lamd2/lamd1,k.b*lamd2/lamd1]
+                        ph_ln = [x*Al/(Al+Ak) for x in ph_l]
+                        ph_kn = [x*Ak/(Al+Ak) for x in ph_k]
+                        gk=[x + y for x, y in zip(ph_ln, ph_kn)]
+                        #gk=(Al*ph_l+Ak*ph_k)/(Al+Ak)
+                        l.h=int(gk[0]) 
+                        l.w=int(gk[1])
+                        self.label[(h, w)].pixels.remove((h, w)) 
+                        self.label[(h, w)].update(l.h, l.w, self.data[l.h][l.w][0], 
+                                   self.data[l.h][l.w][1], self.data[l.h][l.w][2]) 
+                        self.label[(h, w)].pixels.append((h, w)) 
+                        #del self.lmda[(k.h,k.w)]
+                        self.merge=True
+                    else:
+                        while self.unlist!=[] and self.merge==False:
+                            k=self.unlist.pop()
+                            Ak=0
+                            for x,y in k.pixels:
+                                Ak+=self.p_area[(x,y)]
+                            if (Al+Ak)<self.E/5:
+                                for hw in k.pixels:
+                                    for dx, dy in zip(dx4, dy4):
+                                        x = hw[0] + dx
+                                        y = hw[1] + dy
+                                        if (x>=0 and x < self.image_height and 
+                                            y>=0 and y < self.image_width and 
+                                            self.visit[(x,y)]==False and self.label[(x,y)]==k):
+                                            self.visit[(x,y)]=True
+                                            self.label[(x, y)].pixels.remove((x, y)) 
+                                            self.label[(x,y)]=l
+                                            self.label[(x, y)].pixels.append((x, y))
+                                Ak=0
+                                for x,y in k.pixels:
+                                    Ak+=self.p_area[(x,y)]
+                                lamd1=1/self.S
+                                lamd2=1/self.M
+                                ph_l=[l.h,l.w,l.l*lamd2/lamd1,l.a*lamd2/lamd1,l.a*lamd2/lamd1]
+                                ph_k=[k.h,k.w,k.l*lamd2/lamd1,k.a*lamd2/lamd1,k.b*lamd2/lamd1]
+                                ph_ln = [x*Al/(Al+Ak) for x in ph_l]
+                                ph_kn = [x*Ak/(Al+Ak) for x in ph_k]
+                                gk=[x + y for x, y in zip(ph_ln, ph_kn)]
+                                #gk=(Al*float(ph_l)+Ak*float(ph_k))/(Al+Ak)
+                                l.h=int(gk[0]) # new pixel value use update method
+                                l.w=int(gk[1])
+                                self.label[(h, w)].pixels.remove((h, w)) 
+                                self.label[(h, w)].update(l.h, l.w, self.data[l.h][l.w][0], 
+                                           self.data[l.h][l.w][1], self.data[l.h][l.w][2])
+                                self.label[(h, w)].pixels.append((h, w)) 
+                                #del self.lmda[(k.h,k.w)]
+                                self.merge=True
+        if self.merge==True:
+            lbl={ x : self.label[x] for x in self.label}
+            for h in range(self.image_height):
+                if h < 0 or h >= self.image_height: continue
+                for w in range(self.image_width):
+                    if w < 0 or w >= self.image_width: continue
+                    self.label[(h, w)].pixels.remove((h, w)) 
+                    self.label[(h, w)] = lbl[(h,w)] 
+                    self.label[(h, w)].pixels.append((h, w)) 
+                    
+    
+    def update_cluster(self):
+        
+        err_=0
+        for cluster in self.clusters: 
+            sum_h = sum_w = area = 0
+            for p in cluster.pixels: 
+                ap=self.p_area[(p[0],p[1])]
+                sum_h += p[0]*ap
+                sum_w += p[1]*ap
+                area += ap
+            _h = sum_h / (area+np.finfo(float).eps)
+            _w = sum_w / (area+np.finfo(float).eps)
+            err_ += math.pow(_h - cluster.h, 2) + math.pow(_w - cluster.w, 2)
+            _h=int(_h)
+            _w=int(_w)
+            cluster.update(_h, _w, self.data[_h][_w][0], self.data[_h][_w][1], 
+                           self.data[_h][_w][2])
+        return err_  
+    
+    def displayContours(self):
+        dx8 = [-1, -1, 0, 1, 1, 1, 0, -1]
+        dy8 = [0, -1, -1, -1, 0, 1, 1, 1]
+
+        isTaken = np.zeros(self.data.shape[:2], np.bool)
+        contours = []
+
+        for i in range(self.image_width):
+            for j in range(self.image_height):
+                nr_p = 0
+                for dx, dy in zip(dx8, dy8):
+                    x = i + dx
+                    y = j + dy
+                    if x>=0 and x < self.image_width and y>=0 and y < self.image_height:
+                        if isTaken[y, x] == False and self.label[(j, i)] != self.label[(y, x)]:
+                            nr_p += 1
+
+                if nr_p >= 2:
+                    isTaken[j, i] = True
+                    contours.append([j, i])
+        return contours
+
+
+    def iterate(self):
+        self.init_clusters()
+        self.move_clusters()
+        self.compute_area()
+        self.compute_E()
+        self._init=1
+        self.assignment()
+        if self.split_merge==1:
+            self._init=0 # to set to split and merge
+        iter_=0
+        err=np.inf
+        pbar=tqdm(total = self.iter_max+1)
+        while (err> self.eps_ and iter_<=self.iter_max):
+            self._iter=iter_
+            if self.split_merge==1:# to set to split and merge
+                self.split()
+                self.merge_cluster()
+            self.assignment()
+            err=self.update_cluster() 
+            iter_+=1
+            pbar.update(1)
+        name = 'lenna_M{m}_K{k}_loop{loop}.png'.format(loop=iter_, m=self.M, k=self.K)
+        self.save_current_image(name)
+        print(np.array([iter_, err]))
+        pbar.close()
+        return name
+    
+    @staticmethod
+    def save_lab_image(path, lab_arr):
+        """
+        Convert the array to RBG, then save the image
+        :param path:
+        :param lab_arr:
+        :return:
+        """
+        rgb_arr = color.lab2rgb(lab_arr)
+        io.imsave(path, rgb_arr)
+        
+    def save_current_image(self, name):
+        image_arr = np.copy(self.data)
+        for cluster in self.clusters:
+            for p in cluster.pixels: 
+                image_arr[p[0]][p[1]][0] = cluster.l
+                image_arr[p[0]][p[1]][1] = cluster.a
+                image_arr[p[0]][p[1]][2] = cluster.b
+            image_arr[cluster.h][cluster.w][0] = 0
+            image_arr[cluster.h][cluster.w][1] = 0
+            image_arr[cluster.h][cluster.w][2] = 0
+        if self.draw_contour==1:
+            contours=self.displayContours()
+            for i in range(len(contours)):
+                image_arr[contours[i][0]][contours[i][1]][0] = 0
+                image_arr[contours[i][0]][contours[i][1]][1] = 0 
+                image_arr[contours[i][0]][contours[i][1]][2] = 0
+        
+        self.save_lab_image(name, image_arr)
+            
+    def plot_img(self,pic):
+        img = cv2.imread(pic,0)
+        cv2.namedWindow('image', cv2.WINDOW_NORMAL) #create window size dafault cv2.WINDOW_AUTOSIZE 
+        cv2.imshow('image',img) # display image
+        cv2.waitKey(20000) # window still up to 20sec or until you press a key then close
+        cv2.destroyAllWindows()
+
+
+if __name__ == '__main__':
+    p = SLICProcessor('372019.jpg', 300, 40,10,10) #K, M, iter_max, eps_, default :draw_contour=1, split_merge=0
+    name=p.iterate()     
+#    p = SLICProcessor('lena.png', 300, 40,10,10)
+#    name=p.iterate()
+#    p = SLICProcessor('lena.png', 500, 40,10,10)
+#    name=p.iterate()
+#    p = SLICProcessor('lena.png', 1000, 40,10,10)
+#    name=p.iterate()
+#    p = SLICProcessor('lena.png', 300, 50,10,10)
+#    name=p.iterate()
+#    p = SLICProcessor('lena.png', 300, 5,10,10)
+#    name=p.iterate()
+#    p = SLICProcessor('lena.png', 500, 5, 20, 10)
+#    name=p.iterate()
+#    p = SLICProcessor('lena.png', 1000, 5)
+#    name=p.iterate()
+#    p.plot_img(name)
