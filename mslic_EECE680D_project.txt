@@ -14,6 +14,9 @@ eps_: lower error threshold
 Output: K content sensitive superpixels of similar size as image file saved in directory, including plot
 
 @author: WIN7WOS
+
+Souleymane Sow
+
 """
 
 import math
@@ -47,7 +50,7 @@ class Cluster(object):
 
 class SLICProcessor(object):
     
-    def __init__(self, filename, K, M, iter_max, eps_):
+    def __init__(self, filename, K, M, iter_max, eps_, draw_contour=1, split_merge=0): # Contour and no split and merge by default
         self.K = K # desired number of superpixel
         self.M = M # constant Nc
         self.iter_max = iter_max # max iterations
@@ -60,6 +63,8 @@ class SLICProcessor(object):
         self.S = int(math.sqrt(self.N / self.K)) # step size and constant Ns
         self._iter=0
         self._init=0
+        self.split_merge=split_merge
+        self.draw_contour=draw_contour
 
         self.clusters = [] # empty list of all clusters (object )
         self.label = {} # empty dictionary object of pixels(all) as tuple keys for cluster seed values h,w,l,a,b
@@ -105,9 +110,9 @@ class SLICProcessor(object):
         if h + 1 >= self.image_height:
             h = self.image_height - 2
 
-        gradient = self.data[w + 1][h + 1][0] - self.data[w][h][0] + \
-                   self.data[w + 1][h + 1][1] - self.data[w][h][1] + \
-                   self.data[w + 1][h + 1][2] - self.data[w][h][2]
+        gradient = self.data[h + 1][w + 1][0] - self.data[h][w][0] + \
+                   self.data[h + 1][w + 1][1] - self.data[h][w][1] + \
+                   self.data[h + 1][w + 1][2] - self.data[h][w][2]
         return gradient
             
     def move_clusters(self): # move each seed to the lowest gradient position in a 3x3 neighborhood
@@ -283,7 +288,7 @@ class SLICProcessor(object):
                     if self.unlist!=[] and Al<At/(8*self.K):
                         k=self.unlist.pop()
                         
-                        for hw in self.k.pixels:
+                        for hw in k.pixels:
                             for dx, dy in zip(dx4, dy4):
                                 x = hw[0] + dx
                                 y = hw[1] + dy
@@ -299,14 +304,17 @@ class SLICProcessor(object):
                         lamd2=1/self.M
                         ph_l=[l.h,l.w,l.l*lamd2/lamd1,l.a*lamd2/lamd1,l.a*lamd2/lamd1]
                         ph_k=[k.h,k.w,k.l*lamd2/lamd1,k.a*lamd2/lamd1,k.b*lamd2/lamd1]
-                        gk=(ph_l*Al+ph_k*Ak)/(Al+Ak)
-                        l.h=gk[0] 
-                        l.w=gk[1]
+                        ph_ln = [x*Al/(Al+Ak) for x in ph_l]
+                        ph_kn = [x*Ak/(Al+Ak) for x in ph_k]
+                        gk=[x + y for x, y in zip(ph_ln, ph_kn)]
+                        #gk=(Al*ph_l+Ak*ph_k)/(Al+Ak)
+                        l.h=int(gk[0]) 
+                        l.w=int(gk[1])
                         self.label[(h, w)].pixels.remove((h, w)) 
                         self.label[(h, w)].update(l.h, l.w, self.data[l.h][l.w][0], 
                                    self.data[l.h][l.w][1], self.data[l.h][l.w][2]) 
                         self.label[(h, w)].pixels.append((h, w)) 
-                        del self.lmda[(k.h,k.w)]
+                        #del self.lmda[(k.h,k.w)]
                         self.merge=True
                     else:
                         while self.unlist!=[] and self.merge==False:
@@ -333,14 +341,17 @@ class SLICProcessor(object):
                                 lamd2=1/self.M
                                 ph_l=[l.h,l.w,l.l*lamd2/lamd1,l.a*lamd2/lamd1,l.a*lamd2/lamd1]
                                 ph_k=[k.h,k.w,k.l*lamd2/lamd1,k.a*lamd2/lamd1,k.b*lamd2/lamd1]
-                                gk=(ph_l*Al+ph_k*Ak)/(Al+Ak)
-                                l.h=gk[0] # new pixel value use update method
-                                l.w=gk[1]
+                                ph_ln = [x*Al/(Al+Ak) for x in ph_l]
+                                ph_kn = [x*Ak/(Al+Ak) for x in ph_k]
+                                gk=[x + y for x, y in zip(ph_ln, ph_kn)]
+                                #gk=(Al*float(ph_l)+Ak*float(ph_k))/(Al+Ak)
+                                l.h=int(gk[0]) # new pixel value use update method
+                                l.w=int(gk[1])
                                 self.label[(h, w)].pixels.remove((h, w)) 
                                 self.label[(h, w)].update(l.h, l.w, self.data[l.h][l.w][0], 
                                            self.data[l.h][l.w][1], self.data[l.h][l.w][2])
                                 self.label[(h, w)].pixels.append((h, w)) 
-                                del self.lmda[(k.h,k.w)]
+                                #del self.lmda[(k.h,k.w)]
                                 self.merge=True
         if self.merge==True:
             lbl={ x : self.label[x] for x in self.label}
@@ -357,7 +368,7 @@ class SLICProcessor(object):
         
         err_=0
         for cluster in self.clusters: 
-            sum_h = sum_w = area = 0
+            sum_h = sum_w = area = 0 
             for p in cluster.pixels: 
                 ap=self.p_area[(p[0],p[1])]
                 sum_h += p[0]*ap
@@ -402,14 +413,16 @@ class SLICProcessor(object):
         self.compute_E()
         self._init=1
         self.assignment()
-        self._init=0
+        if self.split_merge==1:
+            self._init=0 # to set to split and merge
         iter_=0
         err=np.inf
         pbar=tqdm(total = self.iter_max+1)
         while (err> self.eps_ and iter_<=self.iter_max):
             self._iter=iter_
-            self.split()
-            self.merge_cluster()
+            if self.split_merge==1:# to set to split and merge
+                self.split()
+                self.merge_cluster()
             self.assignment()
             err=self.update_cluster() 
             iter_+=1
@@ -441,12 +454,12 @@ class SLICProcessor(object):
             image_arr[cluster.h][cluster.w][0] = 0
             image_arr[cluster.h][cluster.w][1] = 0
             image_arr[cluster.h][cluster.w][2] = 0
-            
-        contours=self.displayContours()
-        for i in range(len(contours)):
-            image_arr[contours[i][0]][contours[i][1]][0] = 0
-            image_arr[contours[i][0]][contours[i][1]][1] = 0 
-            image_arr[contours[i][0]][contours[i][1]][2] = 0
+        if self.draw_contour==1:
+            contours=self.displayContours()
+            for i in range(len(contours)):
+                image_arr[contours[i][0]][contours[i][1]][0] = 0
+                image_arr[contours[i][0]][contours[i][1]][1] = 0 
+                image_arr[contours[i][0]][contours[i][1]][2] = 0
         
         self.save_lab_image(name, image_arr)
             
@@ -459,19 +472,19 @@ class SLICProcessor(object):
 
 
 if __name__ == '__main__':
-    p = SLICProcessor('lena.png', 200, 40,10,10) #K, M, iter_max, eps_
+    p = SLICProcessor('lena.png', 200, 40,10,10) #K, M, iter_max, eps_, default :draw_contour=1, split_merge=0
     name=p.iterate()     
-#    p = SLICProcessor('lena.png', 300, 40)
+#    p = SLICProcessor('lena.png', 300, 40,10,10)
 #    name=p.iterate()
-#    p = SLICProcessor('lena.png', 500, 40)
+#    p = SLICProcessor('lena.png', 500, 40,10,10)
 #    name=p.iterate()
-#    p = SLICProcessor('lena.png', 1000, 40)
+#    p = SLICProcessor('lena.png', 1000, 40,10,10)
 #    name=p.iterate()
-#    p = SLICProcessor('lena.png', 200, 5,10,100)
+#    p = SLICProcessor('lena.png', 300, 50,10,10)
 #    name=p.iterate()
-#    p = SLICProcessor('lena.png', 300, 5)
+#    p = SLICProcessor('lena.png', 300, 5,10,10)
 #    name=p.iterate()
-#    p = SLICProcessor('lena.png', 500, 5)
+#    p = SLICProcessor('lena.png', 500, 5, 20, 10)
 #    name=p.iterate()
 #    p = SLICProcessor('lena.png', 1000, 5)
 #    name=p.iterate()

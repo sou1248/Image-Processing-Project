@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Mon Apr 23 09:45:30 2018
-
 This is slic algorithm implementation with opencv/python.
  
 Input: I, K, M, iter_max, eps_
@@ -14,6 +13,9 @@ eps_: lower error threshold
 Output: K superpixel of similar size as image file saved in directory, including plot
 
 @author: WIN7WOS
+
+Souleymane Sow
+
 """
 
 import math
@@ -96,9 +98,9 @@ class SLICProcessor(object):
         if h + 1 >= self.image_height:
             h = self.image_height - 2
 
-        gradient = self.data[w + 1][h + 1][0] - self.data[w][h][0] + \
-                   self.data[w + 1][h + 1][1] - self.data[w][h][1] + \
-                   self.data[w + 1][h + 1][2] - self.data[w][h][2]
+        gradient = self.data[h + 1][w + 1][0] - self.data[h][w][0] + \
+                   self.data[h + 1][w + 1][1] - self.data[h][w][1] + \
+                   self.data[h + 1][w + 1][2] - self.data[h][w][2]
         return gradient
 
     def move_clusters(self): # move each seed to the lowest gradient position in a 3x3 neighborhood
