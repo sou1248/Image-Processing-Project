@@ -7,4 +7,5 @@ Reference:
 [1] Y.-J. Liu, C. Yu, M. Yu, and Y. He, “Manifold SLIC: A fast method
 to compute content-sensitive superpixels,” in Proc. IEEE Conf.
 Comput. Vis. Pattern Recog., 2016, pp. 651–659.https://fccdata.org/?facid=74039
+
 [2] laixintao, slic-python-implementation, (2017), GitHub repository, https://github.com/laixintao/slic-python-implementation
